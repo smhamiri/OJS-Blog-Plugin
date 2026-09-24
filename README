@@ -1,0 +1,20 @@
+JEDL Blog Plugin for OJS 3.5.0-5
+Version 3.2.0.4
+
+Key changes:
+- Public /blog and /blog/view/{id} routing rebuilt for OJS 3.5.0-5 using the plugin handler-file path plus handler injection.
+- Added pages/BlogHandler.php and getHandlerPath().
+- Existing Blog Manager, database tables and Save workflow retained.
+- Blog Manager fields now use modern JEDL styling with borders, shadows, focus states and responsive buttons.
+- Added Clear Form button.
+- Existing public-blog button and entry table styled.
+
+Install:
+Replace the contents of:
+plugins/generic/blog/
+Then clear OJS Data Cache and Template Cache.
+
+
+JEDL Blog Plugin v3.2.5.0
+
+The Blog Manager Content field uses a self-contained rich text editor rendered directly in the AJAX response. It does not depend on the OJS TinyMCE plugin being enabled. The editor provides bold, italic, underline, strikethrough, headings, paragraph, lists, alignment, links, image URLs, remove formatting, and HTML source editing. The generated HTML is synchronized to the hidden content field before saving.
