@@ -11,7 +11,7 @@ namespace APP\plugins\generic\blog;
 use APP\core\Application;
 use APP\template\TemplateManager;
 use PKP\linkAction\LinkAction;
-use PKP\linkAction\request\AjaxModal;
+use PKP\linkAction\request\RedirectAction;
 use PKP\plugins\GenericPlugin;
 use PKP\plugins\Hook;
 use PKP\core\JSONMessage;
@@ -49,8 +49,20 @@ class BlogPlugin extends GenericPlugin
             // Public blog page: /index.php/{journalPath}/blog
             Hook::add('LoadHandler', [$this, 'callbackHandleContent']);
 
-            // Keep the original Website Settings Blog tab available.
+            // Render the same Blog Manager in Website Settings and the modal.
             Hook::add('Template::Settings::website', [$this, 'callbackShowWebsiteSettingsTabs']);
+
+            // Register the shared manager assets as soon as the plugin is
+            // initialized. AJAX modal contents do not reliably run scripts
+            // embedded in their HTML.
+            try {
+                $request = Application::get()->getRequest();
+                if ($request) {
+                    $this->addManagerAssets($request, TemplateManager::getManager($request));
+                }
+            } catch (\Throwable $e) {
+                // A request/template manager is not available in CLI tasks.
+            }
 
             // Do not create navigation items directly from register().
             // OJS can load plugins before a journal request context exists.
@@ -288,12 +300,7 @@ class BlogPlugin extends GenericPlugin
         $count = count($entries);
         $escape = static fn($value): string => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
 
-        $router = $request->getRouter();
-        $saveUrl = $router->url(
-            request: $request,
-            op: 'manage',
-            params: ['plugin' => $this->getName(), 'category' => $this->getCategory(), 'action' => 'index']
-        );
+        $saveUrl = $this->getManagerUrl($request);
         $saveUrlEscaped = $escape($saveUrl);
 
         $baseUrl = $request->getBaseUrl();
@@ -304,6 +311,29 @@ class BlogPlugin extends GenericPlugin
             $contextPath ?: Application::SITE_CONTEXT_PATH,
             '_uploadPublicFile'
         );
+
+        $csrfToken = '';
+        try {
+            $session = $request->getSession();
+            if ($session && method_exists($session, 'token')) {
+                // OJS 3.5 forms use Session::token() for Request::checkCSRF().
+                $csrfToken = (string) $session->token();
+            } elseif ($session && method_exists($session, 'getCSRFToken')) {
+                $csrfToken = (string) $session->getCSRFToken();
+            }
+        } catch (\Throwable $e) {
+            // The JavaScript fallback below also discovers the OJS CSRF token.
+        }
+
+        /*
+         * The Website Settings tab and OJS AJAX modals can both discard or
+         * intercept document-level submit listeners. Keep this handler on the
+         * form itself so it works in either container without a page reload.
+         */
+        $managerSubmitScript = <<<'JS'
+var form=this,editor=form.querySelector('.jedl-blog-editor-area'),content=form.querySelector('textarea[name="content"]');if(editor&&content){content.value=editor.innerHTML;}if(typeof form.checkValidity==='function'&&!form.checkValidity()){form.reportValidity();return false;}var token=form.querySelector('[name="csrfToken"]');if(!token||!token.value){alert('OJS CSRF token was not found. Please reload the Blog Manager and try again.');return false;}var confirmation=form.getAttribute('data-confirm');if(confirmation&&!confirm(confirmation)){return false;}var button=form.querySelector('button[type="submit"]'),original=button?button.textContent:'';if(button){button.disabled=true;button.textContent=form.classList.contains('jedl-blog-action-form')?'Working...':'Saving...';}var xhr=new XMLHttpRequest();xhr.open('POST',form.action,true);xhr.setRequestHeader('X-Requested-With','XMLHttpRequest');xhr.setRequestHeader('Accept','application/json');xhr.onreadystatechange=function(){if(xhr.readyState!==4){return;}try{if(xhr.status<200||xhr.status>=300){throw new Error('The server returned HTTP '+xhr.status+'.');}var response=JSON.parse(xhr.responseText);if(response.status===false){throw new Error(typeof response.content==='string'?response.content:'The Blog action was rejected.');}var root=form.closest('.jedl-blog-manager');if(!root||typeof response.content!=='string'){throw new Error('The server returned an invalid Blog Manager response.');}root.outerHTML=response.content;}catch(error){if(button){button.disabled=false;button.textContent=original;}alert('Blog action failed: '+error.message);}};xhr.send(new FormData(form));return false;
+JS;
+        $managerSubmitAttribute = $escape($managerSubmitScript);
 
         $html = '<style>'
             . '.jedl-blog-manager{font-family:inherit;color:#263238}.jedl-blog-manager *{box-sizing:border-box}'
@@ -382,11 +412,11 @@ class BlogPlugin extends GenericPlugin
                     . '<td>' . $escape($this->formatBlogDate($entry->getDatePosted())) . '</td>'
                     . '<td><span class="' . $statusClass . '">' . $statusLabel . '</span></td>'
                     . '<td><a href="' . $escape($entryUrl) . '" target="_blank" rel="noopener">Read</a></td>'
-                    . '<td><form class="jedl-blog-action-form" method="post" action="' . $saveUrlEscaped . '" data-confirm="' . $escape($toggleAction) . '">'
-                    . '<input type="hidden" name="blogEntryId" value="' . $entryId . '"><input type="hidden" name="toggleBlogEntry" value="1"><input type="hidden" name="csrfToken" value="">'
+                    . '<td><form class="jedl-blog-action-form" method="post" action="' . $saveUrlEscaped . '" data-jedl-direct-submit="true" onsubmit="' . $managerSubmitAttribute . '" data-confirm="' . $escape($toggleAction) . '">'
+                    . '<input type="hidden" name="blogEntryId" value="' . $entryId . '"><input type="hidden" name="toggleBlogEntry" value="1"><input type="hidden" name="csrfToken" value="' . $escape($csrfToken) . '">'
                     . '<button type="submit" class="jedl-blog-action-btn jedl-blog-toggle">' . $toggleLabel . '</button></form></td>'
-                    . '<td><form class="jedl-blog-action-form" method="post" action="' . $saveUrlEscaped . '" data-confirm="Delete this blog post permanently? This cannot be undone.">'
-                    . '<input type="hidden" name="blogEntryId" value="' . $entryId . '"><input type="hidden" name="deleteBlogEntry" value="1"><input type="hidden" name="csrfToken" value="">'
+                    . '<td><form class="jedl-blog-action-form" method="post" action="' . $saveUrlEscaped . '" data-jedl-direct-submit="true" onsubmit="' . $managerSubmitAttribute . '" data-confirm="Delete this blog post permanently? This cannot be undone.">'
+                    . '<input type="hidden" name="blogEntryId" value="' . $entryId . '"><input type="hidden" name="deleteBlogEntry" value="1"><input type="hidden" name="csrfToken" value="' . $escape($csrfToken) . '">'
                     . '<button type="submit" class="jedl-blog-action-btn jedl-blog-delete">Delete</button></form></td>'
                     . '</tr>';
             }
@@ -398,9 +428,9 @@ class BlogPlugin extends GenericPlugin
 
         $html .= '<div class="jedl-blog-column jedl-blog-form-column"><div class="jedl-blog-card">'
             . '<h4>Add Blog Entry</h4>'
-            . '<form id="jedlBlogEntryForm" method="post" action="' . $saveUrlEscaped . '" onsubmit="document.getElementById(\'jedlBlogContent\').value=document.getElementById(\'jedlBlogContentEditor\').innerHTML;">'
+            . '<form id="jedlBlogEntryForm" method="post" action="' . $saveUrlEscaped . '" data-jedl-direct-submit="true" onsubmit="' . $managerSubmitAttribute . '">'
             . '<input type="hidden" name="contextId" value="' . $contextId . '">'
-            . '<input type="hidden" name="saveBlogEntry" value="1"><input type="hidden" name="csrfToken" value="">'
+            . '<input type="hidden" name="saveBlogEntry" value="1"><input type="hidden" name="csrfToken" value="' . $escape($csrfToken) . '">'
             . '<div class="jedl-blog-field"><label class="jedl-blog-label" for="jedlBlogTitle">Title <span class="jedl-blog-required">*</span></label><input id="jedlBlogTitle" name="title" type="text" maxlength="255" required value="' . $escape($oldTitle) . '" class="jedl-blog-input"></div>'
             . '<div class="jedl-blog-field"><label class="jedl-blog-label" for="jedlBlogByline">Byline</label><input id="jedlBlogByline" name="byline" type="text" maxlength="255" value="' . $escape($oldByline) . '" class="jedl-blog-input"></div>'
             . '<div class="jedl-blog-field"><label class="jedl-blog-label" for="jedlBlogContentEditor">Content <span class="jedl-blog-required">*</span></label><div class="jedl-blog-editor-wrap"><div class="jedl-blog-editor"><div class="jedl-blog-editor-toolbar" role="toolbar" aria-label="Content formatting toolbar">'
@@ -430,10 +460,35 @@ class BlogPlugin extends GenericPlugin
             . '<div class="jedl-blog-actions"><button type="submit" class="jedl-blog-btn jedl-blog-save">Save Blog Entry</button><button type="button" class="jedl-blog-btn jedl-blog-clear" id="jedlBlogClear">Clear Form</button></div>'
             . '</form>'
             . '<script>(function(){if(window.jedlBlogManagerBound){return;}window.jedlBlogManagerBound=true;function tokenFor(form){var field=form.querySelector("[name=csrfToken]");if(field&&field.value){return field.value;}var candidates=document.querySelectorAll("input[name=csrfToken]");for(var i=0;i<candidates.length;i++){if(candidates[i].value){if(field){field.value=candidates[i].value;}return candidates[i].value;}}if(typeof window.csrfToken === "string" && window.csrfToken){if(field){field.value=window.csrfToken;}return window.csrfToken;}var meta=document.querySelector("meta[name=csrf-token]");if(meta&&meta.content){if(field){field.value=meta.content;}return meta.content;}return "";}function replaceContent(form,response){if(response&&response.content!==undefined){var root=document.getElementById("jedlBlogManagerRoot");if(root){root.outerHTML=response.content;return true;}var c=form.closest(".pkp_modal_content")||form.closest(".pkp_modal");if(c){c.innerHTML=response.content;return true;}return false;}return false;}document.addEventListener("submit",function(e){var form=e.target;if(!form||!form.matches("#jedlBlogEntryForm,.jedl-blog-action-form")){return;}e.preventDefault();var token=tokenFor(form);if(!token){alert("OJS CSRF token was not found. Please reload the page and try again.");return;}var confirmText=form.getAttribute("data-confirm");if(confirmText&&!window.confirm(confirmText)){return;}var button=form.querySelector("button[type=submit]");var original=button?button.textContent:"";if(button){button.disabled=true;button.textContent=form.classList.contains("jedl-blog-action-form")?"Working...":"Saving...";}var x=new XMLHttpRequest();x.open("POST",form.action,true);x.setRequestHeader("X-Requested-With","XMLHttpRequest");x.setRequestHeader("Accept","application/json");x.onreadystatechange=function(){if(x.readyState!==4){return;}try{var r=JSON.parse(x.responseText);if(!replaceContent(form,r)){throw new Error("Invalid OJS response.");}}catch(err){if(button){button.disabled=false;button.textContent=original;}alert("Blog action failed: "+err.message);}};x.send(new FormData(form));},false);document.addEventListener("click",function(e){var clear=e.target.closest?e.target.closest("#jedlBlogClear"):null;if(clear){var f=document.getElementById("jedlBlogEntryForm");if(f){f.reset();var e=document.getElementById(\"jedlBlogContentEditor\");if(e){e.innerHTML=\"\";}var c=document.getElementById(\"jedlBlogContent\");if(c){c.value=\"\";}}}},false);})();</script>'
-            . '<p style="margin-top:16px;font-size:12px;color:#666;">JEDL Blog Plugin v3.2.5.0</p>'
+            . '<p style="margin-top:16px;font-size:12px;color:#666;">JEDL Blog Plugin v3.3.2.1</p>'
             . '</div></div></div>';
 
         return $html;
+    }
+
+    /**
+     * Return OJS 3.5's component endpoint for GenericPlugin::manage().
+     *
+     * A page-router URL such as /management/manage is valid for displaying
+     * some legacy plugin dialogs, but it does not accept Blog Manager POST
+     * actions. The SettingsPluginGridHandler component is the OJS endpoint
+     * that dispatches both the modal and tab requests to this plugin's
+     * manage() method.
+     */
+    protected function getManagerUrl($request): string
+    {
+        return $request->getDispatcher()->url(
+            $request,
+            Application::ROUTE_COMPONENT,
+            null,
+            'grid.settings.plugins.SettingsPluginGridHandler',
+            'manage',
+            null,
+            [
+                'plugin' => $this->getName(),
+                'category' => $this->getCategory(),
+            ]
+        );
     }
 
     public function getActions($request, $actionArgs)
@@ -444,25 +499,28 @@ class BlogPlugin extends GenericPlugin
             return $actions;
         }
 
-        $router = $request->getRouter();
-        $ajaxModal = new AjaxModal(
-            $router->url(
-                request: $request,
-                op: 'manage',
-                params: [
-                    'plugin' => $this->getName(),
-                    'category' => $this->getCategory(),
-                    'action' => 'index',
-                ]
-            ),
-            $this->getDisplayName()
+        /*
+         * Keep one management surface. Opening the manager through an AJAX
+         * modal duplicates the tab and can prevent modal form events from
+         * reaching OJS consistently. This action now opens Website Settings
+         * directly with the Blog tab selected.
+         */
+        $websiteSettingsUrl = $request->getDispatcher()->url(
+            $request,
+            Application::ROUTE_PAGE,
+            null,
+            'management',
+            'settings',
+            ['website'],
+            ['uid' => uniqid()],
+            'blog'
         );
 
         array_unshift(
             $actions,
             new LinkAction(
                 'settings',
-                $ajaxModal,
+                new RedirectAction($websiteSettingsUrl),
                 __('plugins.generic.blog.editAddContent'),
                 null
             )
@@ -487,6 +545,15 @@ class BlogPlugin extends GenericPlugin
     public function callbackEnsurePostNavigationMenu($hookName, $args): bool
     {
         $request = Application::get()->getRequest();
+
+        // Website Settings parses tab contents separately and drops embedded
+        // <style> elements. Register the manager stylesheet before templates
+        // are displayed so the Blog tab has the same layout as the modal.
+        $templateMgr = $args[0] ?? null;
+        if ($templateMgr && $request) {
+            $this->addManagerAssets($request, $templateMgr);
+        }
+
         $context = $request ? $request->getContext() : null;
         if (!$context || (int) $context->getId() <= 0) {
             return Hook::CONTINUE;
@@ -498,6 +565,31 @@ class BlogPlugin extends GenericPlugin
         // frontend/.
         $this->ensurePostNavigationMenu((int) $context->getId());
         return Hook::CONTINUE;
+    }
+
+    /**
+     * Load styles and the persistent action handler on every backend page.
+     */
+    protected function addManagerAssets($request, $templateMgr): void
+    {
+        $assetBaseUrl = $request->getBaseUrl() . '/' . $this->getPluginPath();
+        $options = [
+            'contexts' => ['backend'],
+            'priority' => TemplateManager::STYLE_SEQUENCE_LAST,
+        ];
+
+        $templateMgr->addStyleSheet(
+            'jedlBlogManager',
+            $assetBaseUrl . '/css/blogManager.css?v=3.3.2.1',
+            $options
+        );
+        $scriptOptions = $options;
+        $scriptOptions['inline'] = false;
+        $templateMgr->addJavaScript(
+            'jedlBlogManager',
+            $assetBaseUrl . '/js/blogManager.js?v=3.3.2.1',
+            $scriptOptions
+        );
     }
 
     protected function formatBlogDate($date): string
@@ -638,6 +730,28 @@ class BlogPlugin extends GenericPlugin
     {
         $templateMgr = $args[1];
         $output = &$args[2];
+
+        /*
+         * The old tab used load_url_in_div() with BlogGridHandler::fetchGrid.
+         * That legacy component is no longer the manager used by this plugin,
+         * so its failed AJAX request left the tab showing only a spinner.
+         * Rendering the shared manager here gives the tab every capability of
+         * the modal: listing, reading, saving, enabling, disabling and deleting
+         * entries, plus the rich-text editor.
+         */
+        $request = Application::get()->getRequest();
+        try {
+            $templateMgr->assign('blogManagerHtml', $this->renderManager($request));
+        } catch (\Throwable $e) {
+            error_log('JEDL Blog Plugin: could not render Website Settings tab: ' . $e->getMessage());
+            $templateMgr->assign(
+                'blogManagerHtml',
+                '<div class="pkp_notification pkp_notification_error">'
+                . 'The Blog Manager could not be loaded. Please reload this page and check the OJS error log.'
+                . '</div>'
+            );
+        }
+
         $output .= $templateMgr->fetch($this->getTemplateResource('blogTab.tpl'));
         return Hook::CONTINUE;
     }

@@ -1,5 +1,5 @@
-Blog Plugin for OJS 3.5.0-5
-Version 3.2.5.0
+JEDL Blog Plugin for OJS 3.5.0-5
+Version 3.3.2.1
 
 Key changes:
 - Public /blog and /blog/view/{id} routing rebuilt for OJS 3.5.0-5 using the plugin handler-file path plus handler injection.
@@ -15,6 +15,6 @@ plugins/generic/blog/
 Then clear OJS Data Cache and Template Cache.
 
 
-OJS Blog Plugin v3.2.5.0
-
 The Blog Manager Content field uses a self-contained rich text editor rendered directly in the AJAX response. It does not depend on the OJS TinyMCE plugin being enabled. The editor provides bold, italic, underline, strikethrough, headings, paragraph, lists, alignment, links, image URLs, remove formatting, and HTML source editing. The generated HTML is synchronized to the hidden content field before saving.
+
+Version 3.3.2.1 fixes the Blog tab under Settings > Website. The tab is the only Blog Manager interface and no longer stays on Loading. The plugin's Edit/Add Content action opens that Blog tab directly. Its styles and action handler are loaded as backend assets, and all actions use OJS 3.5's SettingsPluginGridHandler endpoint. The tab supports viewing entries, opening public posts, saving posts with the rich-text editor, enabling/disabling posts, and deleting posts.
