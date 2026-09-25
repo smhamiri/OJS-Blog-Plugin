@@ -1,7 +1,10 @@
 {**
- * Blog plugin -- displays the blog grid.
+ * Blog plugin -- displays the same manager used by the plugin modal.
+ *
+ * The legacy grid endpoint is not used here. In OJS 3.5 it is not the
+ * endpoint that powers the current Blog Manager and would leave this tab
+ * waiting for a response indefinitely.
  *}
 <tab id="blog" label="{translate key="plugins.generic.blog.blog"}">
-    {capture assign=blogGridUrl}{url router=\PKP\core\PKPApplication::ROUTE_COMPONENT component="plugins.generic.blog.controllers.grid.BlogGridHandler" op="fetchGrid" escape=false}{/capture}
-    {load_url_in_div id="blogGridContainer" url=$blogGridUrl}
+    {$blogManagerHtml nofilter}
 </tab>
